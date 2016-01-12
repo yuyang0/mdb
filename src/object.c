@@ -44,7 +44,7 @@ robj *createObject(int type, void *ptr) {
     o->refcount = 1;
 
     /* Set the LRU to the current lruclock (minutes resolution). */
-    o->lru = server.lruclock;
+    // o->lru = server.lruclock;
     return o;
 }
 
@@ -167,6 +167,13 @@ robj *resetRefCount(robj *obj) {
     return obj;
 }
 
+int checkType(robj *o, int type) {
+    if (o->type != type) {
+        return 1;
+    }
+    return 0;
+}
+
 int isObjectRepresentableAsLongLong(robj *o, long long *llval) {
     redisAssertWithInfo(NULL,o,o->type == REDIS_STRING);
     if (o->encoding == REDIS_ENCODING_INT) {
@@ -178,67 +185,67 @@ int isObjectRepresentableAsLongLong(robj *o, long long *llval) {
 }
 
 /* Try to encode a string object in order to save space */
-robj *tryObjectEncoding(robj *o) {
-    long value;
-    sds s = o->ptr;
-    size_t len;
-
-    if (o->encoding != REDIS_ENCODING_RAW)
-        return o; /* Already encoded */
-
-    /* It's not safe to encode shared objects: shared objects can be shared
-     * everywhere in the "object space" of Redis. Encoded objects can only
-     * appear as "values" (and not, for instance, as keys) */
-     if (o->refcount > 1) return o;
-
-    /* Currently we try to encode only strings */
-    redisAssertWithInfo(NULL,o,o->type == REDIS_STRING);
-
-    /* Check if we can represent this string as a long integer */
-    len = sdslen(s);
-    if (len > 21 || !string2l(s,len,&value)) {
-        /* We can't encode the object...
-         *
-         * Do the last try, and at least optimize the SDS string inside
-         * the string object to require little space, in case there
-         * is more than 10% of free space at the end of the SDS string.
-         *
-         * We do that for larger strings, using the arbitrary value
-         * of 32 bytes. This code was backported from the unstable branch
-         * where this is performed when the object is too large to be
-         * encoded as EMBSTR. */
-        if (len > 32 &&
-            o->encoding == REDIS_ENCODING_RAW &&
-            sdsavail(s) > len/10)
-        {
-            o->ptr = sdsRemoveFreeSpace(o->ptr);
-        }
-        /* Return the original object. */
-        return o;
-    }
-
-    /* Ok, this object can be encoded...
-     *
-     * Can I use a shared object? Only if the object is inside a given range
-     *
-     * Note that we also avoid using shared integers when maxmemory is used
-     * because every object needs to have a private LRU field for the LRU
-     * algorithm to work well. */
-    if ((server.maxmemory == 0 ||
-         (server.maxmemory_policy != REDIS_MAXMEMORY_VOLATILE_LRU &&
-          server.maxmemory_policy != REDIS_MAXMEMORY_ALLKEYS_LRU)) &&
-        value >= 0 && value < REDIS_SHARED_INTEGERS)
-    {
-        decrRefCount(o);
-        incrRefCount(shared.integers[value]);
-        return shared.integers[value];
-    } else {
-        o->encoding = REDIS_ENCODING_INT;
-        sdsfree(o->ptr);
-        o->ptr = (void*) value;
-        return o;
-    }
-}
+//robj *tryObjectEncoding(robj *o) {
+//    long value;
+//    sds s = o->ptr;
+//    size_t len;
+//
+//    if (o->encoding != REDIS_ENCODING_RAW)
+//        return o; /* Already encoded */
+//
+//    /* It's not safe to encode shared objects: shared objects can be shared
+//     * everywhere in the "object space" of Redis. Encoded objects can only
+//     * appear as "values" (and not, for instance, as keys) */
+//     if (o->refcount > 1) return o;
+//
+//    /* Currently we try to encode only strings */
+//    redisAssertWithInfo(NULL,o,o->type == REDIS_STRING);
+//
+//    /* Check if we can represent this string as a long integer */
+//    len = sdslen(s);
+//    if (len > 21 || !string2l(s,len,&value)) {
+//        /* We can't encode the object...
+//         *
+//         * Do the last try, and at least optimize the SDS string inside
+//         * the string object to require little space, in case there
+//         * is more than 10% of free space at the end of the SDS string.
+//         *
+//         * We do that for larger strings, using the arbitrary value
+//         * of 32 bytes. This code was backported from the unstable branch
+//         * where this is performed when the object is too large to be
+//         * encoded as EMBSTR. */
+//        if (len > 32 &&
+//            o->encoding == REDIS_ENCODING_RAW &&
+//            sdsavail(s) > len/10)
+//        {
+//            o->ptr = sdsRemoveFreeSpace(o->ptr);
+//        }
+//        /* Return the original object. */
+//        return o;
+//    }
+//
+//    /* Ok, this object can be encoded...
+//     *
+//     * Can I use a shared object? Only if the object is inside a given range
+//     *
+//     * Note that we also avoid using shared integers when maxmemory is used
+//     * because every object needs to have a private LRU field for the LRU
+//     * algorithm to work well. */
+//    if ((server.maxmemory == 0 ||
+//         (server.maxmemory_policy != REDIS_MAXMEMORY_VOLATILE_LRU &&
+//          server.maxmemory_policy != REDIS_MAXMEMORY_ALLKEYS_LRU)) &&
+//        value >= 0 && value < REDIS_SHARED_INTEGERS)
+//    {
+//        decrRefCount(o);
+//        incrRefCount(shared.integers[value]);
+//        return shared.integers[value];
+//    } else {
+//        o->encoding = REDIS_ENCODING_INT;
+//        sdsfree(o->ptr);
+//        o->ptr = (void*) value;
+//        return o;
+//    }
+//}
 
 /* Get a decoded version of an encoded object (returned as a new object).
  * If the object is already raw-encoded just increment the ref count. */

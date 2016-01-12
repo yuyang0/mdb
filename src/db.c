@@ -40,36 +40,36 @@ void SlotToKeyDel(robj *key);
  *----------------------------------------------------------------------------*/
 
 robj *lookupKey(redisDb *db, robj *key) {
-    dictEntry *de = dictFind(db->dict,key->ptr);
-    if (de) {
-        robj *val = dictGetVal(de);
+	dictEntry *de = dictFind(db->dict, key->ptr);
+	if (de) {
+		robj *val = dictGetVal(de);
 
-        /* Update the access time for the ageing algorithm.
-         * Don't do it if we have a saving child, as this will trigger
-         * a copy on write madness. */
-        if (server.rdb_child_pid == -1 && server.aof_child_pid == -1)
-            val->lru = server.lruclock;
-        return val;
-    } else {
-        return NULL;
-    }
+		/* Update the access time for the ageing algorithm.
+		 * Don't do it if we have a saving child, as this will trigger
+		 * a copy on write madness. */
+//        if (server.rdb_child_pid == -1 && server.aof_child_pid == -1)
+//            val->lru = server.lruclock;
+		return val;
+	} else {
+		return NULL;
+	}
 }
 
 robj *lookupKeyRead(redisDb *db, robj *key) {
-    robj *val;
+	robj *val;
 
-    expireIfNeeded(db,key);
-    val = lookupKey(db,key);
-    if (val == NULL)
-        stats.keyspace_misses++;
-    else
-        stats.keyspace_hits++;
-    return val;
+	expireIfNeeded(db, key);
+	val = lookupKey(db, key);
+	if (val == NULL)
+		stats.keyspace_misses++;
+	else
+		stats.keyspace_hits++;
+	return val;
 }
 
 robj *lookupKeyWrite(redisDb *db, robj *key) {
-    expireIfNeeded(db,key);
-    return lookupKey(db,key);
+	expireIfNeeded(db, key);
+	return lookupKey(db, key);
 }
 
 /* Add the key to the DB. It's up to the caller to increment the reference
@@ -77,12 +77,13 @@ robj *lookupKeyWrite(redisDb *db, robj *key) {
  *
  * The program is aborted if the key already exists. */
 void dbAdd(redisDb *db, robj *key, robj *val) {
-    sds copy = sdsdup(key->ptr);
-    int retval = dictAdd(db->dict, copy, val);
+	sds copy = sdsdup(key->ptr);
+	int retval = dictAdd(db->dict, copy, val);
 
-    redisAssertWithInfo(NULL,key,retval == REDIS_OK);
-    if (val->type == REDIS_LIST) signalListAsReady(db, key);
- }
+	redisAssertWithInfo(NULL, key, retval == REDIS_OK);
+	if (val->type == REDIS_LIST)
+		signalListAsReady(db, key);
+}
 
 /* Overwrite an existing key with a new value. Incrementing the reference
  * count of the new value is up to the caller.
@@ -90,10 +91,10 @@ void dbAdd(redisDb *db, robj *key, robj *val) {
  *
  * The program is aborted if the key was not already present. */
 void dbOverwrite(redisDb *db, robj *key, robj *val) {
-    struct dictEntry *de = dictFind(db->dict,key->ptr);
+	struct dictEntry *de = dictFind(db->dict, key->ptr);
 
-    redisAssertWithInfo(NULL,key,de != NULL);
-    dictReplace(db->dict, key->ptr, val);
+	redisAssertWithInfo(NULL, key, de != NULL);
+	dictReplace(db->dict, key->ptr, val);
 }
 
 /* High level Set operation. This function can be used in order to set
@@ -103,18 +104,18 @@ void dbOverwrite(redisDb *db, robj *key, robj *val) {
  * 2) clients WATCHing for the destination key notified.
  * 3) The expire time of the key is reset (the key is made persistent). */
 void setKey(redisDb *db, robj *key, robj *val) {
-    if (lookupKeyWrite(db,key) == NULL) {
-        dbAdd(db,key,val);
-    } else {
-        dbOverwrite(db,key,val);
-    }
-    incrRefCount(val);
-    removeExpire(db,key);
-    signalModifiedKey(db,key);
+	if (lookupKeyWrite(db, key) == NULL) {
+		dbAdd(db, key, val);
+	} else {
+		dbOverwrite(db, key, val);
+	}
+	incrRefCount(val);
+	removeExpire(db, key);
+	signalModifiedKey(db, key);
 }
 
 int dbExists(redisDb *db, robj *key) {
-    return dictFind(db->dict,key->ptr) != NULL;
+	return dictFind(db->dict, key->ptr) != NULL;
 }
 
 /* Return a random key, in form of a Redis object.
@@ -122,37 +123,39 @@ int dbExists(redisDb *db, robj *key) {
  *
  * The function makes sure to return keys not already expired. */
 robj *dbRandomKey(redisDb *db) {
-    struct dictEntry *de;
+	struct dictEntry *de;
 
-    while(1) {
-        sds key;
-        robj *keyobj;
+	while (1) {
+		sds key;
+		robj *keyobj;
 
-        de = dictGetRandomKey(db->dict);
-        if (de == NULL) return NULL;
+		de = dictGetRandomKey(db->dict);
+		if (de == NULL)
+			return NULL;
 
-        key = dictGetKey(de);
-        keyobj = createStringObject(key,sdslen(key));
-        if (dictFind(db->expires,key)) {
-            if (expireIfNeeded(db,keyobj)) {
-                decrRefCount(keyobj);
-                continue; /* search for another key. This expired. */
-            }
-        }
-        return keyobj;
-    }
+		key = dictGetKey(de);
+		keyobj = createStringObject(key, sdslen(key));
+		if (dictFind(db->expires, key)) {
+			if (expireIfNeeded(db, keyobj)) {
+				decrRefCount(keyobj);
+				continue; /* search for another key. This expired. */
+			}
+		}
+		return keyobj;
+	}
 }
 
 /* Delete a key, value, and associated expiration entry if any, from the DB */
 int dbDelete(redisDb *db, robj *key) {
-    /* Deleting an entry from the expires dict will not free the sds of
-     * the key, because it is shared with the main dictionary. */
-    if (dictSize(db->expires) > 0) dictDelete(db->expires,key->ptr);
-    if (dictDelete(db->dict,key->ptr) == DICT_OK) {
-        return 1;
-    } else {
-        return 0;
-    }
+	/* Deleting an entry from the expires dict will not free the sds of
+	 * the key, because it is shared with the main dictionary. */
+	if (dictSize(db->expires) > 0)
+		dictDelete(db->expires, key->ptr);
+	if (dictDelete(db->dict, key->ptr) == DICT_OK) {
+		return 1;
+	} else {
+		return 0;
+	}
 }
 
 /* Prepare the string object stored at 'key' to be modified destructively
@@ -183,26 +186,24 @@ int dbDelete(redisDb *db, robj *key) {
  * using an sdscat() call to append some data, or anything else.
  */
 robj *dbUnshareStringValue(redisDb *db, robj *key, robj *o) {
-    redisAssert(o->type == REDIS_STRING);
-    if (o->refcount != 1 || o->encoding != REDIS_ENCODING_RAW) {
-        robj *decoded = getDecodedObject(o);
-        o = createStringObject(decoded->ptr, sdslen(decoded->ptr));
-        decrRefCount(decoded);
-        dbOverwrite(db,key,o);
-    }
-    return o;
+	redisAssert(o->type == REDIS_STRING);
+	if (o->refcount != 1 || o->encoding != REDIS_ENCODING_RAW) {
+		robj *decoded = getDecodedObject(o);
+		o = createStringObject(decoded->ptr, sdslen(decoded->ptr));
+		decrRefCount(decoded);
+		dbOverwrite(db, key, o);
+	}
+	return o;
 }
 
-long long emptyDb(void(callback)(void*)) {
-    int j;
-    long long removed = 0;
+long long emptyDb(redisDb *db, void (callback)(void*)) {
+	int j;
+	long long removed = 0;
 
-    for (j = 0; j < server.dbnum; j++) {
-        removed += dictSize(server.db[j].dict);
-        dictEmpty(server.db[j].dict,callback);
-        dictEmpty(server.db[j].expires,callback);
-    }
-    return removed;
+	removed += dictSize(db.dict);
+	dictEmpty(db.dict, callback);
+	dictEmpty(db.expires, callback);
+	return removed;
 }
 
 /*-----------------------------------------------------------------------------
@@ -210,48 +211,51 @@ long long emptyDb(void(callback)(void*)) {
  *----------------------------------------------------------------------------*/
 
 int removeExpire(redisDb *db, robj *key) {
-    /* An expire may only be removed if there is a corresponding entry in the
-     * main dict. Otherwise, the key will never be freed. */
-    redisAssertWithInfo(NULL,key,dictFind(db->dict,key->ptr) != NULL);
-    return dictDelete(db->expires,key->ptr) == DICT_OK;
+	/* An expire may only be removed if there is a corresponding entry in the
+	 * main dict. Otherwise, the key will never be freed. */
+	redisAssertWithInfo(NULL, key, dictFind(db->dict, key->ptr) != NULL);
+	return dictDelete(db->expires, key->ptr) == DICT_OK;
 }
 
 void setExpire(redisDb *db, robj *key, long long when) {
-    dictEntry *kde, *de;
+	dictEntry *kde, *de;
 
-    /* Reuse the sds from the main dict in the expire dict */
-    kde = dictFind(db->dict,key->ptr);
-    redisAssertWithInfo(NULL,key,kde != NULL);
-    de = dictReplaceRaw(db->expires,dictGetKey(kde));
-    dictSetSignedIntegerVal(de,when);
+	/* Reuse the sds from the main dict in the expire dict */
+	kde = dictFind(db->dict, key->ptr);
+	redisAssertWithInfo(NULL, key, kde != NULL);
+	de = dictReplaceRaw(db->expires, dictGetKey(kde));
+	dictSetSignedIntegerVal(de, when);
 }
 
 /* Return the expire time of the specified key, or -1 if no expire
  * is associated with this key (i.e. the key is non volatile) */
 long long getExpire(redisDb *db, robj *key) {
-    dictEntry *de;
+	dictEntry *de;
 
-    /* No expire? return ASAP */
-    if (dictSize(db->expires) == 0 ||
-       (de = dictFind(db->expires,key->ptr)) == NULL) return -1;
+	/* No expire? return ASAP */
+	if (dictSize(db->expires) == 0||
+	(de = dictFind(db->expires,key->ptr)) == NULL)
+		return -1;
 
-    /* The entry was found in the expire dict, this means it should also
-     * be present in the main dict (safety check). */
-    redisAssertWithInfo(NULL,key,dictFind(db->dict,key->ptr) != NULL);
-    return dictGetSignedIntegerVal(de);
+	/* The entry was found in the expire dict, this means it should also
+	 * be present in the main dict (safety check). */
+	redisAssertWithInfo(NULL, key, dictFind(db->dict, key->ptr) != NULL);
+	return dictGetSignedIntegerVal(de);
 }
 
 int expireIfNeeded(redisDb *db, robj *key) {
-    mstime_t when = getExpire(db,key);
-    mstime_t now;
+	mstime_t when = getExpire(db, key);
+	mstime_t now;
 
-    if (when < 0) return 0; /* No expire for this key */
+	if (when < 0)
+		return 0; /* No expire for this key */
 
-    /* Return when this key has not expired */
-    if (now <= when) return 0;
+	/* Return when this key has not expired */
+	if (now <= when)
+		return 0;
 
-    /* Delete the key */
-    stats.expiredkeys++;
+	/* Delete the key */
+	stats.expiredkeys++;
 
-    return dbDelete(db,key);
+	return dbDelete(db, key);
 }

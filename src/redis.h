@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <time.h>
 #include <limits.h>
 #include <unistd.h>
@@ -19,6 +20,7 @@
 typedef long long mstime_t; /* millisecond time type. */
 
 #include "stats.h"
+#include "sds.h"
 #include "dict.h"
 
 /* Error codes */
@@ -103,5 +105,51 @@ struct sharedObjectsStruct {
 };
 
 extern struct sharedObjectsStruct shared;
+extern redisDb *db;
+
+/* Redis object implementation */
+void decrRefCount(robj *o);
+void decrRefCountVoid(void *o);
+void incrRefCount(robj *o);
+robj *resetRefCount(robj *obj);
+void freeStringObject(robj *o);
+robj *createObject(int type, void *ptr);
+robj *createStringObject(char *ptr, size_t len);
+robj *dupStringObject(robj *o);
+int isObjectRepresentableAsLongLong(robj *o, long long *llongval);
+robj *tryObjectEncoding(robj *o);
+robj *getDecodedObject(robj *o);
+size_t stringObjectLen(robj *o);
+robj *createStringObjectFromLongLong(long long value);
+robj *createStringObjectFromLongDouble(long double value, int humanfriendly);
+
+int getLongLongFromObject(robj *o, long long *target);
+int getLongDoubleFromObject(robj *o, long double *target);
+char *strEncoding(int encoding);
+int compareStringObjects(robj *a, robj *b);
+int collateStringObjects(robj *a, robj *b);
+int equalStringObjects(robj *a, robj *b);
+
+/* db.c -- Keyspace access API */
+int removeExpire(redisDb *db, robj *key);
+void propagateExpire(redisDb *db, robj *key);
+int expireIfNeeded(redisDb *db, robj *key);
+long long getExpire(redisDb *db, robj *key);
+void setExpire(redisDb *db, robj *key, long long when);
+robj *lookupKey(redisDb *db, robj *key);
+robj *lookupKeyRead(redisDb *db, robj *key);
+robj *lookupKeyWrite(redisDb *db, robj *key);
+
+void dbAdd(redisDb *db, robj *key, robj *val);
+void dbOverwrite(redisDb *db, robj *key, robj *val);
+void setKey(redisDb *db, robj *key, robj *val);
+int dbExists(redisDb *db, robj *key);
+robj *dbRandomKey(redisDb *db);
+int dbDelete(redisDb *db, robj *key);
+robj *dbUnshareStringValue(redisDb *db, robj *key, robj *o);
+long long emptyDb(void(callback)(void*));
+void signalModifiedKey(redisDb *db, robj *key);
+void signalFlushedDb(int dbid);
+unsigned int GetKeysInSlot(unsigned int hashslot, robj **keys, unsigned int count);
 
 #endif
