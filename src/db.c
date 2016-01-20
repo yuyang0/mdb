@@ -1,62 +1,189 @@
-/*
- * Copyright (c) 2009-2012, Salvatore Sanfilippo <antirez at gmail dot com>
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- *   * Redistributions of source code must retain the above copyright notice,
- *     this list of conditions and the following disclaimer.
- *   * Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *   * Neither the name of Redis nor the names of its contributors may be used
- *     to endorse or promote products derived from this software without
- *     specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- */
+#include "db.h"
 
-#include "redis.h"
+value_t *createValue(unsigned encoding, void *p) {
+	value_t *val = zmalloc(sizeof(*val));
+	val->encoding = encoding;
+	val->ver = 0;
+	val->ptr = p;
+	return val;
+}
 
-#include <signal.h>
-#include <ctype.h>
+value_t *createValueFromLongLong(long long v) {
+	value_t *val;
+	if (v >= LONG_MIN && v <= LONG_MAX) {
+		val = createValue(ENCODING_INT, NULL);
+		val->ptr = (void*) ((long) v);
+	} else {
+		val = createValue(ENCODING_RAW, sdsfromlonglong(v));
+	}
+	return val;
+}
 
-void SlotToKeyAdd(robj *key);
-void SlotToKeyDel(robj *key);
+value_t *createValueFromStr(void *s, size_t len) {
+	long v;
+	value_t *val;
+	// first we try to encode the string as a long.
+	if (len > 21 || !string2l(s, len, &v)) {
+		val = createValue(ENCODING_RAW, sdsnewlen(s, len));
+	} else {
+		val = createValue(ENCODING_INT, NULL);
+		val->ptr = (void*) ((long) v);
+	}
+	return val;
+}
 
+void freeValue(value_t *val) {
+	if (val->encoding == ENCODING_RAW) {
+		sdsfree(val->ptr);
+	}
+	zfree(val);
+}
+
+int getLongLongFromValue(value_t *val, long long *ret) {
+	long long v;
+	char *eptr;
+
+	if (val == NULL) {
+		v = 0;
+	} else {
+		if (val->encoding == ENCODING_INT) {
+			v = (long) val->ptr;
+		} else if (val->encoding == ENCODING_RAW) {
+			errno = 0;
+			v = strtoll(val->ptr, &eptr, 10);
+			if (isspace(((char*) val->ptr)[0]) || eptr[0] != '\0'
+			|| errno == ERANGE)
+				return MDB_ERR;
+		} else {
+			panic("Unknown encoding");
+		}
+	}
+	*ret = v;
+	return MDB_OK;
+}
+
+value_t *toStringValue(value_t *val) {
+	if (val->encoding == ENCODING_RAW)
+		return val;
+	long long v = (long) val->ptr;
+	sds *p = sdsfromlonglong(v);
+	if (p == NULL)
+		return NULL;
+	val->ptr = p;
+	return val;
+}
+
+// try encode a string value as integer.
+value_t *tryValueEncoding(value_t *val) {
+	if (val->encoding == ENCODING_INT)
+		return val;
+	size_t len = sdslen(val->ptr);
+	long v;
+	if (len > 21 || !string2l(val->ptr, len, &v)) {
+		if (len > 32 && sdsavail(val->ptr) > len / 10) {
+			val->ptr = sdsRemoveFreeSpace(val->ptr);
+		}
+		return val;
+	} else {
+		val->encoding = ENCODING_INT;
+		sdsfree(val->ptr);
+		val->ptr = (void*) ((long) v);
+	}
+}
+
+void incValueVersion(value_t *val) {
+	val->ver++;
+}
+
+void resetValueVersion(value_t *val) {
+	val->ver = 0;
+}
+
+size_t valueLen(value_t *val) {
+	if (val->encoding == ENCODING_RAW)
+		return 0;
+	return sdslen(val->ptr);
+}
 /*-----------------------------------------------------------------------------
  * C-level DB API
  *----------------------------------------------------------------------------*/
+unsigned int dictSdsHash(const void *key) {
+	return dictGenHashFunction((unsigned char*) key, sdslen((char*) key));
+}
 
-robj *lookupKey(redisDb *db, robj *key) {
-	dictEntry *de = dictFind(db->dict, key->ptr);
+int dictSdsKeyCompare(void *privdata, const void *key1, const void *key2) {
+	int l1, l2;
+	DICT_NOTUSED(privdata);
+
+	l1 = sdslen((sds) key1);
+	l2 = sdslen((sds) key2);
+	if (l1 != l2)
+		return 0;
+	return memcmp(key1, key2, l1) == 0;
+}
+
+void dictSdsDestructor(void *privdata, void *val) {
+	DICT_NOTUSED(privdata);
+
+	sdsfree(val);
+}
+
+void dictValueDestructor(void *privdata, void *val) {
+	DICT_NOTUSED(privdata);
+	freeValue(val);
+}
+
+dictType dbDictType = {
+		dictSdsHash, /* hash function */
+		NULL, /* key dup */
+		NULL, /* val dup */
+		dictSdsKeyCompare, /* key compare */
+		dictSdsDestructor, /* key destructor */
+		dictValueDestructor /* val destructor */
+};
+/* Db->expires */
+dictType keyptrDictType = {
+		dictSdsHash, /* hash function */
+		NULL, /* key dup */
+		NULL, /* val dup */
+		dictSdsKeyCompare, /* key compare */
+		NULL, /* key destructor */
+		NULL /* val destructor */
+};
+
+dictType hashSlotType = {
+		dictSdsHash, /* hash function */
+		NULL, /* key dup */
+		NULL, /* val dup */
+		dictSdsKeyCompare, /* key compare */
+		NULL, /* key destructor */
+		NULL /* val destructor */
+};
+
+memoryDb *memoryDbNew(int numSlots) {
+	memoryDb *db = zmalloc(sizeof(*db));
+	db->dict = dictCreate(dbDictType, NULL);
+	db->expires = dictCreate(keyptrDictType, NULL);
+	db->slots = zmalloc(numSlots * sizeof(dict*));
+	int i;
+	for (i = 0; i < numSlots; ++i) {
+		db->slots[i] = dictCreate(hashSlotType, NULL);
+	}
+}
+
+value_t *lookupKey(memoryDb *db, sds *key) {
+	dictEntry *de = dictFind(db->dict, key);
 	if (de) {
-		robj *val = dictGetVal(de);
+		value_t *val = dictGetVal(de);
 
-		/* Update the access time for the ageing algorithm.
-		 * Don't do it if we have a saving child, as this will trigger
-		 * a copy on write madness. */
-//        if (server.rdb_child_pid == -1 && server.aof_child_pid == -1)
-//            val->lru = server.lruclock;
 		return val;
 	} else {
 		return NULL;
 	}
 }
 
-robj *lookupKeyRead(redisDb *db, robj *key) {
-	robj *val;
+value_t *lookupKeyRead(memoryDb *db, sds *key) {
+	value_t *val;
 
 	expireIfNeeded(db, key);
 	val = lookupKey(db, key);
@@ -67,7 +194,7 @@ robj *lookupKeyRead(redisDb *db, robj *key) {
 	return val;
 }
 
-robj *lookupKeyWrite(redisDb *db, robj *key) {
+value_t *lookupKeyWrite(memoryDb *db, sds *key) {
 	expireIfNeeded(db, key);
 	return lookupKey(db, key);
 }
@@ -76,13 +203,12 @@ robj *lookupKeyWrite(redisDb *db, robj *key) {
  * counter of the value if needed.
  *
  * The program is aborted if the key already exists. */
-void dbAdd(redisDb *db, robj *key, robj *val) {
-	sds copy = sdsdup(key->ptr);
+void dbAdd(memoryDb *db, sds *key, value_t *val) {
+	sds copy = sdsdup(key);
+	resetValueVersion(val);
 	int retval = dictAdd(db->dict, copy, val);
 
-	redisAssertWithInfo(NULL, key, retval == REDIS_OK);
-	if (val->type == REDIS_LIST)
-		signalListAsReady(db, key);
+	redisAssertWithInfo(NULL, key, retval == MDB_OK);
 }
 
 /* Overwrite an existing key with a new value. Incrementing the reference
@@ -90,113 +216,44 @@ void dbAdd(redisDb *db, robj *key, robj *val) {
  * This function does not modify the expire time of the existing key.
  *
  * The program is aborted if the key was not already present. */
-void dbOverwrite(redisDb *db, robj *key, robj *val) {
-	struct dictEntry *de = dictFind(db->dict, key->ptr);
+void dbOverwrite(memoryDb *db, sds *key, value_t *val) {
+	struct dictEntry *de = dictFind(db->dict, key);
 
 	redisAssertWithInfo(NULL, key, de != NULL);
-	dictReplace(db->dict, key->ptr, val);
+	dictReplace(db->dict, key, val);
 }
 
 /* High level Set operation. This function can be used in order to set
  * a key, whatever it was existing or not, to a new object.
  *
- * 1) The ref count of the value object is incremented.
- * 2) clients WATCHing for the destination key notified.
- * 3) The expire time of the key is reset (the key is made persistent). */
-void setKey(redisDb *db, robj *key, robj *val) {
+ * 1) The expire time of the key is reset (the key is made persistent). */
+void setKey(memoryDb *db, sds *key, value_t *val) {
 	if (lookupKeyWrite(db, key) == NULL) {
 		dbAdd(db, key, val);
 	} else {
 		dbOverwrite(db, key, val);
 	}
-	incrRefCount(val);
 	removeExpire(db, key);
-	signalModifiedKey(db, key);
 }
 
-int dbExists(redisDb *db, robj *key) {
-	return dictFind(db->dict, key->ptr) != NULL;
-}
-
-/* Return a random key, in form of a Redis object.
- * If there are no keys, NULL is returned.
- *
- * The function makes sure to return keys not already expired. */
-robj *dbRandomKey(redisDb *db) {
-	struct dictEntry *de;
-
-	while (1) {
-		sds key;
-		robj *keyobj;
-
-		de = dictGetRandomKey(db->dict);
-		if (de == NULL)
-			return NULL;
-
-		key = dictGetKey(de);
-		keyobj = createStringObject(key, sdslen(key));
-		if (dictFind(db->expires, key)) {
-			if (expireIfNeeded(db, keyobj)) {
-				decrRefCount(keyobj);
-				continue; /* search for another key. This expired. */
-			}
-		}
-		return keyobj;
-	}
+int dbExists(memoryDb *db, sds *key) {
+	return dictFind(db->dict, key) != NULL;
 }
 
 /* Delete a key, value, and associated expiration entry if any, from the DB */
-int dbDelete(redisDb *db, robj *key) {
+int dbDelete(memoryDb *db, sds *key) {
 	/* Deleting an entry from the expires dict will not free the sds of
 	 * the key, because it is shared with the main dictionary. */
 	if (dictSize(db->expires) > 0)
-		dictDelete(db->expires, key->ptr);
-	if (dictDelete(db->dict, key->ptr) == DICT_OK) {
+		dictDelete(db->expires, key);
+	if (dictDelete(db->dict, key) == DICT_OK) {
 		return 1;
 	} else {
 		return 0;
 	}
 }
 
-/* Prepare the string object stored at 'key' to be modified destructively
- * to implement commands like SETBIT or APPEND.
- *
- * An object is usually ready to be modified unless one of the two conditions
- * are true:
- *
- * 1) The object 'o' is shared (refcount > 1), we don't want to affect
- *    other users.
- * 2) The object encoding is not "RAW".
- *
- * If the object is found in one of the above conditions (or both) by the
- * function, an unshared / not-encoded copy of the string object is stored
- * at 'key' in the specified 'db'. Otherwise the object 'o' itself is
- * returned.
- *
- * USAGE:
- *
- * The object 'o' is what the caller already obtained by looking up 'key'
- * in 'db', the usage pattern looks like this:
- *
- * o = lookupKeyWrite(db,key);
- * if (checkType(c,o,REDIS_STRING)) return;
- * o = dbUnshareStringValue(db,key,o);
- *
- * At this point the caller is ready to modify the object, for example
- * using an sdscat() call to append some data, or anything else.
- */
-robj *dbUnshareStringValue(redisDb *db, robj *key, robj *o) {
-	redisAssert(o->type == REDIS_STRING);
-	if (o->refcount != 1 || o->encoding != REDIS_ENCODING_RAW) {
-		robj *decoded = getDecodedObject(o);
-		o = createStringObject(decoded->ptr, sdslen(decoded->ptr));
-		decrRefCount(decoded);
-		dbOverwrite(db, key, o);
-	}
-	return o;
-}
-
-long long emptyDb(redisDb *db, void (callback)(void*)) {
+long long emptyDb(memoryDb *db, void (callback)(void*)) {
 	int j;
 	long long removed = 0;
 
@@ -210,18 +267,18 @@ long long emptyDb(redisDb *db, void (callback)(void*)) {
  * Expires API
  *----------------------------------------------------------------------------*/
 
-int removeExpire(redisDb *db, robj *key) {
+int removeExpire(memoryDb *db, sds *key) {
 	/* An expire may only be removed if there is a corresponding entry in the
 	 * main dict. Otherwise, the key will never be freed. */
-	redisAssertWithInfo(NULL, key, dictFind(db->dict, key->ptr) != NULL);
-	return dictDelete(db->expires, key->ptr) == DICT_OK;
+	redisAssertWithInfo(NULL, key, dictFind(db->dict, key) != NULL);
+	return dictDelete(db->expires, key) == DICT_OK;
 }
 
-void setExpire(redisDb *db, robj *key, long long when) {
+void setExpire(memoryDb *db, sds *key, long long when) {
 	dictEntry *kde, *de;
 
 	/* Reuse the sds from the main dict in the expire dict */
-	kde = dictFind(db->dict, key->ptr);
+	kde = dictFind(db->dict, key);
 	redisAssertWithInfo(NULL, key, kde != NULL);
 	de = dictReplaceRaw(db->expires, dictGetKey(kde));
 	dictSetSignedIntegerVal(de, when);
@@ -229,21 +286,20 @@ void setExpire(redisDb *db, robj *key, long long when) {
 
 /* Return the expire time of the specified key, or -1 if no expire
  * is associated with this key (i.e. the key is non volatile) */
-long long getExpire(redisDb *db, robj *key) {
+long long getExpire(memoryDb *db, sds *key) {
 	dictEntry *de;
 
 	/* No expire? return ASAP */
-	if (dictSize(db->expires) == 0||
-	(de = dictFind(db->expires,key->ptr)) == NULL)
+	if (dictSize(db->expires) == 0 || (de = dictFind(db->expires, key)) == NULL)
 		return -1;
 
 	/* The entry was found in the expire dict, this means it should also
 	 * be present in the main dict (safety check). */
-	redisAssertWithInfo(NULL, key, dictFind(db->dict, key->ptr) != NULL);
+	redisAssertWithInfo(NULL, key, dictFind(db->dict, key) != NULL);
 	return dictGetSignedIntegerVal(de);
 }
 
-int expireIfNeeded(redisDb *db, robj *key) {
+int expireIfNeeded(memoryDb *db, sds *key) {
 	mstime_t when = getExpire(db, key);
 	mstime_t now;
 
@@ -259,3 +315,4 @@ int expireIfNeeded(redisDb *db, robj *key) {
 
 	return dbDelete(db, key);
 }
+
