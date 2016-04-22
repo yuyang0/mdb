@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "sds.h"
 #include "db.h"
 
 #endif

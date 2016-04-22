@@ -2,21 +2,37 @@
 
 static memoryDb *db = NULL;
 
+static sds *sdsinitbuf(void *buf, size_t buflen, void *init, size_t initlen) {
+	struct sdshdr *sh;
+	if (buflen != (sizeof(*sh) + initlen + 1)) return NULL;
+	sh = (struct sdshdr *) buf;
+	sh->len = initlen;
+	sh->free = 0;
+	memcpy(sh->buf, init, initlen);
+	sh->buf[initlen] = '\0';
+	return (char *)sh->buf;
+}
+
+#define SDS_NEW_IN_STK(init, out) \
+		size_t buflen = strlen(init) + 1 + sizeof(struct sdshdr); \
+		char buf[buflen]; \
+		out = sdsinitbuf(buf, buflen, init, strlen(init));
+
 static bool incrDecrCommand(memoryDb *db, sds *key, long long incr) {
-	long long value, oldvalue;
+	long long v, oldvalue;
 	value_t *o, *new;
 
 	o = lookupKeyWrite(db, key);
-	if (getLongLongFromValue(o, &value) != MDB_OK)
+	if (getLongLongFromValue(o, &v) != MDB_OK)
 		return false;
 
-	oldvalue = value;
+	oldvalue = v;
 	if ((incr < 0 && oldvalue < 0 && incr < (LLONG_MIN - oldvalue))
 			|| (incr > 0 && oldvalue > 0 && incr > (LLONG_MAX - oldvalue))) {
 		return false;
 	}
-	value += incr;
-	new = createValueFromLongLong(value);
+	v += incr;
+	new = createValueFromLongLong(v);
 	if (o)
 		dbOverwrite(db, key, new);
 	else
@@ -132,12 +148,15 @@ void prepend(const char *k, const char *prefix) {
 
 bool delete(const char *k) {
 	sds *key = sdsnew(k);
+	bool ret;
 	expireIfNeeded(db, key);
 	if (dbDelete(db, key)) {
-	    return true;
+	    ret = true;
 	} else {
-		return false;
+		ret = false;
 	}
+	sdsfree(key);
+	return ret;
 }
 
 void cas() {

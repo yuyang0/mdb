@@ -95,6 +95,11 @@ void incValueVersion(value_t *val) {
 	val->ver++;
 }
 
+void setValueVersion(value_t *val, unsigned ver) {
+	//TODO: check overflow
+	val->ver = ver;
+}
+
 void resetValueVersion(value_t *val) {
 	val->ver = 0;
 }
@@ -220,6 +225,8 @@ void dbOverwrite(memoryDb *db, sds *key, value_t *val) {
 	struct dictEntry *de = dictFind(db->dict, key);
 
 	redisAssertWithInfo(NULL, key, de != NULL);
+	value_t *oldval = dictGetVal(de);
+	setValueVersion(val, oldval->ver+1);
 	dictReplace(db->dict, key, val);
 }
 
